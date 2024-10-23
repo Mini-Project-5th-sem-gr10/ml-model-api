@@ -3,9 +3,10 @@ from fastapi.responses import JSONResponse
 import face_recognition
 import numpy as np
 import pickle
-from PIL import Image
+from PIL import Image, ImageDraw
 import io
 import os
+import uuid
 
 router = APIRouter()
 
@@ -13,11 +14,15 @@ router = APIRouter()
 with open('models/trained_model.pkl', 'rb') as f:
     known_face_encodings, known_face_names = pickle.load(f)
 
+# Directory to save recognized images (for dev purpose)
+SAVE_DIR = "recognized_images_dev"
+os.makedirs(SAVE_DIR, exist_ok=True)
+
 @router.post("/predict/")
 async def predict_faces(file: UploadFile = File(...)):
     # Check the file size to ensure it isn't too large
-    if file.size > 5 * 1024 * 1024:  # 5 MB size limit
-        raise HTTPException(status_code=413, detail="File too large. Max size is 5MB.")
+    if file.size > 50 * 1024 * 1024:  # 50 MB size limit
+        raise HTTPException(status_code=413, detail="File too large. Max size is 50MB.")
     
     # Read the image data
     image_data = await file.read()
@@ -29,11 +34,6 @@ async def predict_faces(file: UploadFile = File(...)):
     try:
         # Load the image
         image = Image.open(io.BytesIO(image_data))
-
-        # Print image properties for debugging
-        print(f"Uploaded image format: {image.format}")
-        print(f"Uploaded image mode: {image.mode}")
-        print(f"Uploaded image size: {image.size}")
 
         # Ensure the image is in RGB mode
         if image.mode not in ['RGB', 'L']:  # Check for RGB or grayscale
@@ -51,7 +51,10 @@ async def predict_faces(file: UploadFile = File(...)):
         # List to store recognized face names
         recognized_names = []
 
-        for face_encoding in face_encodings:
+        # Create a drawing object for the image (for saving purposes)
+        draw = ImageDraw.Draw(image)
+
+        for i, face_encoding in enumerate(face_encodings):
             # Compare the face with known encodings
             matches = face_recognition.compare_faces(known_face_encodings, face_encoding, tolerance=0.5)
             name = "Unknown"
@@ -65,77 +68,24 @@ async def predict_faces(file: UploadFile = File(...)):
 
             recognized_names.append(name)
 
-        return JSONResponse(content={"recognized_faces": recognized_names})
+            # Draw a rectangle around the face (for dev purpose)
+            top, right, bottom, left = face_locations[i]
+            draw.rectangle(((left, top), (right, bottom)), outline=(0, 0, 255), width=2)
+
+            # Annotate the face with the name (for dev purpose)
+            draw.text((left + 6, bottom + 10), name, fill=(255, 255, 255, 255))
+
+        # For dev purposes, save the annotated image to the local folder
+        image_filename = f"{uuid.uuid4()}.jpg"
+        image.save(os.path.join(SAVE_DIR, image_filename))
+        recognized_names_without_unknown = [name for name in recognized_names if name !="Unknown"]
+
+        # Returning only the recognized names (response remains unchanged)
+        return JSONResponse(content={"recognized_faces": recognized_names_without_unknown})
 
     except Exception as e:
         print(f"Error: {str(e)}")  # Log the error
         raise HTTPException(status_code=500, detail=f'An error occurred while processing the image.\n Error: {e}')
-
-@router.get("/predict-local-image/")
-async def predict_local_image():
-    # Define the path to the uploads folder and the specific image
-    uploads_folder = "uploads"  # Change this path if necessary
-    image_name = "me.jpeg"  # Name of the image file
-    image_path = os.path.join(uploads_folder, image_name)
-
-    # Print the current working directory and the image path for debugging
-    print(f"Current working directory: {os.getcwd()}")
-    print(f"Image path: {image_path}")
-
-    # Check if the file exists
-    if not os.path.isfile(image_path):
-        raise HTTPException(status_code=404, detail="Image not found.")
-
-    try:
-        # Load the image
-        image = Image.open(image_path)
-
-        # Print image properties for debugging
-        print(f"Uploaded image format: {image.format}")
-        print(f"Uploaded image mode: {image.mode}")
-        print(f"Uploaded image size: {image.size}")
-
-        # Ensure the image is in RGB mode and convert if necessary
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-
-        # Convert the image to a NumPy array
-        test_image = np.array(image)
-
-        # Ensure the array is of type uint8
-        if test_image.dtype != np.uint8:
-            test_image = test_image.astype(np.uint8)
-
-        # Check the minimum and maximum pixel values in the image
-        print(f"Image data min: {test_image.min()}, max: {test_image.max()}")
-
-        # Find all face locations and encodings in the image
-        face_locations = face_recognition.face_locations(test_image)
-        face_encodings = face_recognition.face_encodings(test_image, face_locations)
-
-        # List to store recognized face names
-        recognized_names = []
-
-        for face_encoding in face_encodings:
-            # Compare the face with known encodings
-            matches = face_recognition.compare_faces(known_face_encodings, face_encoding, tolerance=0.5)
-            name = "Unknown"
-
-            # Use the closest known face match
-            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
-            best_match_index = np.argmin(face_distances)
-
-            if matches[best_match_index]:
-                name = known_face_names[best_match_index]
-
-            recognized_names.append(name)
-
-        return JSONResponse(content={"recognized_faces": recognized_names})
-
-    except Exception as e:
-        print(f"Error: {str(e)}")  # Log the error
-        raise HTTPException(status_code=500, detail=f'An error occurred while processing the image.\n Error: {e}')
-
 
 @router.get("/")
 async def root():
